@@ -1,0 +1,255 @@
+#!/bin/bash
+############################################################
+# Script that searches and downloads songs from goear.com
+# http://www.goear.com
+#
+# Requirements: dialog and xmlstarlet.
+#
+# Michael Pratt <pratt@hablarmierda.net>
+# http://www.michael-pratt.com
+#
+# License: MIT
+# Copyright (C) 2011 by Michael Pratt <pratt@hablarmierda.net>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+##################################################################
+shopt -s checkwinsize
+APPNAME="goBear"
+VERSION="1.0"
+CWD=$(pwd)
+TMPDIR=${TMPDIR:-$(mktemp -d -t goBash.XXXXXX)}
+DIALOG=${DIALOG:-dialog}
+
+# Its a Trap!
+trap "goBear_exit" 0 1 2 5 15
+#################################################################
+# Funcion encargada de limpiar lo que no sirve!
+#################################################################
+goBear_exit() { rm -rf "${TMPDIR}"; }
+
+#################################################################
+# Funcion encargada de verificar dependencias
+#################################################################
+goBear_requires()
+{
+	local app
+	for app in ${@}; do
+		echo "Buscando por $app....."
+		if ! [ "$(which $app 2> /dev/null)" ]; then
+			echo "*** Error: No cumples con las dependencias! :("
+			[ "$app" = "xml" ] && echo "*** Paquete que debes instalar: xmlstarlet" || echo "*** Paquete que debes instalar: $app"
+			exit 0
+		fi
+	done
+}
+
+#################################################################
+# Funcion encargada de mostrar los resultados de la busqueda
+#################################################################
+goBear_search()
+{
+	# verificar que si hay palabras/datos para buscar
+	clear
+	[ -z "$(echo $@ | sed 's/ //g')" ] && echo "*** No ingresaste terminos a buscar" && exit 0
+
+	cd ${TMPDIR}
+	local query=$(echo $@ | sed 's/ /+/g')
+	local percent=0
+
+	(rm -rf ${TMPDIR}/tmp_list
+	for i in $(seq 0 $PAGES); do
+		wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/search.php?q=${query}&p=${i}" -O ${TMPDIR}/tmp_search${i}
+		cat ${TMPDIR}/tmp_search${i} >> ${TMPDIR}/tmp_list
+
+		let percent="${i}*100/${PAGES}"
+		echo ${percent}
+	done) | ${DIALOG} --clear --title "$APPNAME $VERSION" --backtitle "$APPNAME $VERSION" --gauge "Buscando por '$query' en las primeras $PAGES paginas" 15 110 0
+
+	# Creamos una lista del tipo ID|NOMBRE, para despues formatearla
+	egrep -o "listen/([a-zA-Z0-9])+/([^/,'\"])+" ${TMPDIR}/tmp_list | sed 's/listen\///g' | tr '/' '|' > ${TMPDIR}/tmp_songs
+	[ "$(stat -c%s $TMPDIR/tmp_songs)" -eq 0 ] && echo "*** Advertencia: No se encontraron archivos que coincidan con ${query}" && exit 0
+
+	rm -rf ${TMPDIR}/search_list
+	cat ${TMPDIR}/tmp_songs | while read line; do
+		printf "\"%s\" \"%s\" off \\ \n" $(echo $line | awk 'BEGIN {FS="|"} {print $1}') $(echo $line | awk 'BEGIN {FS="|"} {print $2}' | sed 's/&amp;/and/g;s/&//g;s/?//g') >> ${TMPDIR}/search_list
+	done
+
+	cat ${TMPDIR}/search_list | uniq | xargs ${DIALOG} --clear --title "$APPNAME $VERSION" --backtitle "$APPNAME $VERSION" --item-help --separate-output --checklist "Escoge las canciones que deseas descargar: ($(cat $TMPDIR/search_list | wc -l) resultados)" 15 70 10 2> ${TMPDIR}/tmp_selection
+	[ "$(stat -c%s $TMPDIR/tmp_selection)" -eq 0 ] && echo "Accion cancelada" && exit 0
+
+	# Si ya pasamos todos los filtros, podemos empezar a descargar
+	local id
+	for id in $(cat $TMPDIR/tmp_selection | tr -d [:punct:]); do
+		goBear_download ${id}
+	done
+}
+
+#################################################################
+# Funcion encargada de descargar las canciones
+#################################################################
+goBear_download()
+{
+	clear
+	local id=${1}
+	[ -z "${id}" ] && echo "*** Error: No especificaste el id de la cancion" && exit 1
+	echo "Buscando por id ${id}"
+
+	# Extraemos la informacion del xml
+	wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/tracker758.php?f=${id}" -O ${TMPDIR}/tmp_xml
+
+	# Corregimos los titulos/artistas que puedan corromper el xml
+	sed -i 's/&/and/g;' ${TMPDIR}/tmp_xml
+
+	# Leer la informacion
+	local file=$(xml sel -t -m //song -v @path $TMPDIR/tmp_xml)
+	local artist=$(xml sel -t -m //song -v @artist $TMPDIR/tmp_xml)
+	local song=$(xml sel -t -m //song -v @title $TMPDIR/tmp_xml)
+	local output=$(echo "${artist}-${song}.mp3" | sed 's/ /_/g')
+	[ -z "$file" ] && echo "*** Error: No pude determinar la url a descargar! (xml: http://www.goear.com/tracker758.php?f=${id})" && exit 0
+
+	echo "==================================================================="
+	echo "Descargando ${CWD}/${output}"
+	echo "==================================================================="
+	wget --user-agent="Mozilla/5.0" -v "${file}" -O "${CWD}/${output}"
+
+	rm -rf ${TMPDIR}/tmp_xml
+}
+
+#################################################################
+# Funcion encargada extraer el codigo de una url
+# y luego descargar el archivo relacionado
+#################################################################
+goBear_get_id()
+{
+	local url="${1}"
+	local id=""
+	echo "Procesando ${url}"
+
+	if [ -n "$(echo ${url} | egrep -o 'http://(www\.)?goear\.com/listen/(.+)/(.+)')" ]; then
+		id=$(echo ${url} | sed 's#www.##g;s#http://goear.com/listen/##g' | awk 'BEGIN {FS="/"} {print $1}')
+	elif [ -n "$(echo ${url} | egrep -o 'http://(www\.)?goear\.com/listenwin\.php\?v=(.+)')" ]; then
+		id=$(echo ${url} | sed 's#www.##g;s#http://goear.com/listenwin.php?v=##g' | tr -d [:blank:])
+	elif  [ -n "$(echo ${url} | egrep -o '^[a-zA-Z0-9]+$')" ]; then
+		id=${1}
+	fi
+
+	if [ -z "${id}" ]; then
+		echo "*** No pude determinar el id correspondiente a ${url}"
+		exit 0
+	fi
+
+	goBear_download ${id}
+}
+
+#################################################################
+# Funcion que muestra la ayuda
+#################################################################
+goBear_help()
+{
+	clear
+	echo "$APPNAME - $VERSION"
+	echo "Uso: $(basename $0) [opcion]"
+   	echo "Requerimientos: dialog, xmlstarlet"
+   	echo "Autor: Michael Pratt <pratt@hablarmierda.net>"
+	echo ""
+   	echo "DESCRIPCION"
+   	echo "	Script en bash que sirve para buscar y descargar archivos de goear.com."
+   	echo "	Este script fue escrito con fines educativos."
+   	echo ""
+   	echo "OPCIONES"
+   	echo "	-p | --pages [0-9]+"
+   	echo "		El numero de paginas de busqueda que deben ser analizadas."
+   	echo "		Actualmente se buscan las primeras $SEARCHPAGES paginas."
+   	echo "		Entre mas grande sea el valor, mas tiempo va a tomar el script"
+   	echo ""
+   	echo "	-o | --output [directorio]"
+   	echo "		Path al directorio en donde se deben guardar los archivos"
+   	echo "		que van a ser descargados."
+   	echo ""
+   	echo "	-s | --search [palabras]"
+   	echo "		Busca por canciones que contengan las palabras especificadas"
+   	echo ""
+   	echo "	-d | --download [url|id]"
+   	echo "		Descarga el archivo perteneciente a la url/id especificada"
+   	echo ""
+   	echo "	-h | --help"
+   	echo "		Muestra este dialogo"
+   	echo ""
+   	echo "EJEMPLOS"
+   	echo "	Descargar mp3 de una url:"
+   	echo "		$(basename $0) -d http://goear.com/listen/8b988d8/bound-for-the-floor-local-h"
+   	echo "		$(basename $0) -d 8b988d8"
+   	echo ""
+   	echo "	Buscar por una cancion en las primeras 15 paginas de resultados"
+   	echo "		$(basename $0) -r 15 -s local h"
+   	echo ""
+   	echo "AUTOR"
+   	echo "	Michael Pratt <pratt@hablarmierda.net>"
+   	echo "	http://www.michael-pratt.com"
+   	echo ""
+	exit 0
+}
+
+#################################################################
+# Y asi fue, como lo cuento....
+#################################################################
+clear
+goBear_requires xml ${DIALOG}
+DOWNLOADDIR="${CWD}"
+! [ -e "${DOWNLOADDIR}" ] && mkdir -p "${DOWNLOADDIR}"
+! [ -e "${TMPDIR}" ] && mkdir -p "${TMPDIR}"
+[ "$(whoami)" = "root" ] && echo "No deberias correr este script como root! :(" && exit 0
+
+SEARCH=0
+DOWN=0
+PAGES="15"
+ARGS=()
+while [ -n "$1" ]; do
+	case ${1} in
+		-p|--pages)
+			shift
+			if [ -n "$(echo $1 | egrep '^[[:digit:]]+$')" ] && [ "${1}" -gt 0 ]; then
+				PAGES=${1}
+			fi ;;
+		-o|--output)
+			shift
+			if [ -n "${1}" ] && [ -d "${1}" ] && [ -w "${1}" ]; then
+				DOWNLOADDIR=${1}
+			fi ;;
+		-s|--search) SEARCH=1;;
+		-d|--download) DOWN=1 ;;
+		-h|--help) goBear_help;;
+		*) ARGS+=( "${1}" );;
+	esac
+	shift
+done
+
+#################################################################
+# Determina las acciones a tomar!
+#################################################################
+if [ "${DOWN}" -eq 1 ]; then
+	goBear_get_id ${ARGS[@]}
+elif [ "${SEARCH}" -eq 1 ]; then
+	goBear_search ${ARGS[@]}
+else
+	${DIALOG} --clear --title "$APPNAME $VERSION" --backtitle "$APPNAME $VERSION" --inputbox "Hola! Introduce el nombre de la cancion o del artista que deseas buscar en goear: (Ejemplo: nothing else matters)" 15 110 2> ${TMPDIR}/tmp_dlg_query
+	goBear_search $(cat $TMPDIR/tmp_dlg_query)
+fi
+
+exit 0
