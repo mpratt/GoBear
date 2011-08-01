@@ -3,12 +3,14 @@ GoBear 1.0
 Script en Bash (para linux) que permite descargar los mp3s de la página [goear.com](http://www.goear.com)
 
 Este script permite:
+
 - Descargar mp3s usando su url o codigo
 - Buscar por artistas o canciones y escoger el audio a descargar
 
 Requerimientos
 ==============
 Para que este script funcione debes tener los siguientes programas instalados:
+
 - Lógicamente una shell bash (Linux)
 - dialog
 - [xmlstarlet](http://xmlstar.sourceforge.net/)
@@ -70,5 +72,6 @@ THE SOFTWARE.
 
 Autor
 =====
+
 Michael Pratt
 http://www.michael-pratt.com
