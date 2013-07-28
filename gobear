@@ -74,7 +74,7 @@ goBear_search()
 
 	(rm -rf ${TMPDIR}/tmp_list
 	for i in $(seq 0 $PAGES); do
-		wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/search.php?q=${query}&p=${i}" -O ${TMPDIR}/tmp_search${i}
+		wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/search/${query}/${i}/" -O ${TMPDIR}/tmp_search${i}
 		cat ${TMPDIR}/tmp_search${i} >> ${TMPDIR}/tmp_list
 
 		let percent="${i}*100/${PAGES}"
@@ -111,22 +111,24 @@ goBear_download()
 	echo "Buscando por id ${id}"
 
 	# Extraemos la informacion del xml
-	wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/tracker758.php?f=${id}" -O ${TMPDIR}/tmp_xml
+	wget -T 20 --user-agent="Mozilla/5.0" -q "http://www.goear.com/playersong/${id}" -O ${TMPDIR}/tmp_xml
 
 	# Corregimos los titulos/artistas que puedan corromper el xml
-	sed -i 's/&/and/g;' ${TMPDIR}/tmp_xml
+	# sed -i 's/&/and/g;' ${TMPDIR}/tmp_xml
 
 	# Leer la informacion
-	local file=$(xml sel -t -m //song -v @path $TMPDIR/tmp_xml)
-	local artist=$(xml sel -t -m //song -v @artist $TMPDIR/tmp_xml)
-	local song=$(xml sel -t -m //song -v @title $TMPDIR/tmp_xml)
-	local output=$(echo "${artist}-${song}.mp3" | sed 's/ /_/g')
-	[ -z "$file" ] && echo "*** Error: No pude determinar la url a descargar! (xml: http://www.goear.com/tracker758.php?f=${id})" && exit 0
+	local file=$(xml sel -t -m //track -v @title $TMPDIR/tmp_xml)
+	if [ -z "$file" ]; then
+        echo "*** Error: No pude determinar el nombre de la cancion (xml:http://www.goear.com/playersong/${id})"
+        file="desconocido-${RANDOM}.mp3"
+    else
+        file=${file}.mp3
+    fi
 
 	echo "==================================================================="
 	echo "Descargando ${CWD}/${output}"
 	echo "==================================================================="
-	wget --user-agent="Mozilla/5.0" -v "${file}" -O "${CWD}/${output}"
+	wget --user-agent="Mozilla/5.0" -v "http://www.goear.com/action/sound/get/${id}" -O "${CWD}/${file}"
 
 	rm -rf ${TMPDIR}/tmp_xml
 }
